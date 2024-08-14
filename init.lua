@@ -160,7 +160,7 @@ function obj:refreshIP()
 
     if fetchError == nil then
         -- Set the menu title with country code
-        menuTitle = countryCode
+        menuTitle = "🔗"
 
         -- Add each network item to the menu in a vertical list
         table.insert(menuItems, {title = "🌍 Public IP: " .. publicIP, fn = copyToClipboard})
