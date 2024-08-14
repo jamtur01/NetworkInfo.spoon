@@ -107,9 +107,9 @@ function getDNSInfo()
 end
 
 function getCurrentSSID()
-    local ssid = hs.wifi.currentNetwork()
-    if ssid then
-        return ssid
+    local ssid = hs.execute("networksetup -getairportnetwork en0 | awk -F ': ' '{print $2}'")
+    if ssid and ssid ~= "" then
+        return ssid:gsub("\n", "")
     else
         return "Not connected"
     end
@@ -168,8 +168,8 @@ function obj:start()
     self.menu = hs.menubar.new()
     self:refreshIP()
 
-    -- Refresh the menu every 60 seconds
-    self.timer = hs.timer.doEvery(60, function() self:refreshIP() end)
+    -- Refresh the menu every 120 seconds
+    self.timer = hs.timer.doEvery(120, function() self:refreshIP() end)
 
     return self
 end
