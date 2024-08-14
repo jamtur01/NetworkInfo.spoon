@@ -8,6 +8,7 @@ The `NetworkInfo` Spoon is a Hammerspoon utility that displays essential network
 
 - **Public IP Address:** Displays the public IP address of your current network.
 - **Local IP Address:** Shows the local IP address associated with the primary network interface (usually `en0` for Wi-Fi).
+- **SSID Information:** Displays the SSID of the connected Wi-Fi network.
 - **ISP Information:** Lists the ISP providing your Internet connection.
 - **Country Information:** Shows the country and country code based on the public IP.
 - **DNS Servers:** Lists both manually configured and DHCP/automatic DNS servers, with duplicate entries filtered out.
@@ -37,6 +38,7 @@ Once the Spoon is started, you will see a menu bar item that displays the countr
 
 - 🌍 **Public IP:** The public IP address of your current network.
 - 💻 **Local IP (en0):** The local IP address of your primary network interface.
+- 📶 **SSID:** The current Wifi SSID.
 - **DNS Servers:** A list of DNS servers (both manually configured and DHCP/automatic).
 - 📇 **ISP:** The ISP providing your Internet connection.
 - 📍 **Country:** The country and country code based on the public IP.
@@ -46,7 +48,7 @@ Once the Spoon is started, you will see a menu bar item that displays the countr
 
 ### Customizing the Refresh Interval
 
-You can adjust the automatic refresh interval by modifying the `hs.timer.doEvery` value in the Spoon's `start()` function. By default, the menu refreshes every 60 seconds.
+You can adjust the automatic refresh interval by modifying the `hs.timer.doEvery` value in the Spoon's `start()` function. By default, the menu refreshes every 120 seconds.
 
 ### Filtering Duplicate DNS Entries
 
@@ -65,15 +67,11 @@ spoon.NetworkInfo:start()
 
 If you encounter issues such as incorrect or missing network information, try the following steps:
 
-1. **Check Network Preferences:**
-
-   - Ensure that your network interfaces are correctly configured in macOS **System Preferences > Network**.
-
-2. **Review Logs:**
+1. **Review Logs:**
 
    - Check the Hammerspoon console for any error messages or logs that might indicate the source of the problem.
 
-3. **DNS Configuration:**
+2. **DNS Configuration:**
    - If DNS entries appear incorrectly or duplicates persist, verify your DNS configuration using `scutil --dns` in the terminal.
 
 ## License
