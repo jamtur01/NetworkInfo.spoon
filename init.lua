@@ -7,7 +7,7 @@ obj.__index = obj
 
 -- Metadata
 obj.name = "NetworkInfo"
-obj.version = "1.3"
+obj.version = "1.4"
 obj.author = "James Turnbull <james@lovedthanlost.net>"
 obj.license = "MIT - https://opensource.org/licenses/MIT"
 obj.homepage = "https://github.com/jamtur01/NetworkInfo.spoon"
@@ -15,6 +15,9 @@ obj.homepage = "https://github.com/jamtur01/NetworkInfo.spoon"
 -- PublicIP Metadata and Variables
 obj.publicIPGeolocationService = "http://ip-api.com/json/"
 obj.terse = true
+
+-- Previous state to detect changes
+local previousState = {}
 
 --- Callback function for menu items to call refreshIP method
 function callRefresh(modifiers, payload)
@@ -130,6 +133,27 @@ function obj:refreshIP()
     local countryCode = geoIPData.countryCode
   
     local fetchError = geoIPData.err
+
+    -- Check for changes and notify
+    local currentState = {
+        ssid = ssid,
+        publicIP = publicIP,
+        localIP = localIP,
+        dnsInfo = table.concat(dnsInfo, ", "),
+        ISP = ISP,
+        country = country
+    }
+
+    for key, value in pairs(currentState) do
+        if previousState[key] ~= value then
+            hs.notify.new({
+                title = "NetworkInfo Update",
+                informativeText = string.format("%s changed to: %s", key, value)
+            }):send()
+        end
+    end
+
+    previousState = currentState
 
     local menuTitle = "N/A"
     local menuItems = {}
