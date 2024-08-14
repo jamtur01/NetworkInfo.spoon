@@ -1,13 +1,13 @@
 --- === NetworkInfo ===
 ---
---- A drop-down menu listing your public IP information and current DNS servers.
+--- A drop-down menu listing your public IP information, current DNS servers, and Wi-Fi SSID.
 
 local obj = {}
 obj.__index = obj
 
 -- Metadata
 obj.name = "NetworkInfo"
-obj.version = "1.2"
+obj.version = "1.3"
 obj.author = "James Turnbull <james@lovedthanlost.net>"
 obj.license = "MIT - https://opensource.org/licenses/MIT"
 obj.homepage = "https://github.com/jamtur01/NetworkInfo.spoon"
@@ -106,6 +106,14 @@ function getDNSInfo()
     return dnsInfo
 end
 
+function getCurrentSSID()
+    local ssid = hs.wifi.currentNetwork()
+    if ssid then
+        return ssid
+    else
+        return "Not connected"
+    end
+end
 
 --- PublicIP:refreshIP()
 --- Method
@@ -114,6 +122,7 @@ function obj:refreshIP()
     local geoIPData = getGeoIPData()
     local localIP = getLocalIPAddress()
     local dnsInfo = getDNSInfo()
+    local ssid = getCurrentSSID()
 
     local ISP = geoIPData.isp
     local country = geoIPData.country
@@ -132,6 +141,7 @@ function obj:refreshIP()
         -- Add each network item to the menu in a vertical list
         table.insert(menuItems, {title = "🌍 Public IP: " .. publicIP, fn = copyToClipboard})
         table.insert(menuItems, {title = "💻 Local IP (en0): " .. localIP, fn = copyToClipboard})
+        table.insert(menuItems, {title = "📶 SSID: " .. ssid, fn = copyToClipboard})
         for _, dns in ipairs(dnsInfo) do
             table.insert(menuItems, {title = "DNS: " .. dns, fn = copyToClipboard})
         end
