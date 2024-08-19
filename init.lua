@@ -1,13 +1,13 @@
 --- === NetworkInfo ===
 ---
---- A drop-down menu listing your public IP information, current DNS servers, and Wi-Fi SSID.
+--- A drop-down menu listing your public IP information, current DNS servers, Wi-Fi SSID, and VPN details.
 
 local obj = {}
 obj.__index = obj
 
 -- Metadata
 obj.name = "NetworkInfo"
-obj.version = "1.4"
+obj.version = "1.5"
 obj.author = "James Turnbull <james@lovedthanlost.net>"
 obj.license = "MIT - https://opensource.org/licenses/MIT"
 obj.homepage = "https://github.com/jamtur01/NetworkInfo.spoon"
@@ -118,6 +118,26 @@ function getCurrentSSID()
     end
 end
 
+function getVPNConnections()
+    local vpnConnections = {}
+
+    -- Use ifconfig to get network interfaces
+    local handle = io.popen("ifconfig")
+    local ifconfig_output = handle:read("*a")
+    handle:close()
+
+    -- Look for interfaces containing "utun" (typical for VPN connections)
+    for interface in ifconfig_output:gmatch("(%w*utun%d+)") do
+        local details = hs.network.interfaceDetails(interface)
+        if details and details.IPv4 and details.IPv4.Addresses then
+            local ipAddress = details.IPv4.Addresses[1]
+            table.insert(vpnConnections, {name = interface, ip = ipAddress})
+        end
+    end
+
+    return vpnConnections
+end
+
 --- PublicIP:refreshIP()
 --- Method
 --- Refreshes IP information and redraws menubar widget
@@ -126,6 +146,7 @@ function obj:refreshIP()
     local localIP = getLocalIPAddress()
     local dnsInfo = getDNSInfo()
     local ssid = getCurrentSSID()
+    local vpnConnections = getVPNConnections()
 
     local ISP = geoIPData.isp
     local country = geoIPData.country
@@ -155,13 +176,10 @@ function obj:refreshIP()
 
     previousState = currentState
 
-    local menuTitle = "N/A"
+    local menuTitle = "🔗"  -- Set the menu title to the network icon
     local menuItems = {}
 
     if fetchError == nil then
-        -- Set the menu title with country code
-        menuTitle = "🔗"
-
         -- Add each network item to the menu in a vertical list
         table.insert(menuItems, {title = "🌍 Public IP: " .. publicIP, fn = copyToClipboard})
         table.insert(menuItems, {title = "💻 Local IP (en0): " .. localIP, fn = copyToClipboard})
@@ -169,8 +187,16 @@ function obj:refreshIP()
         for _, dns in ipairs(dnsInfo) do
             table.insert(menuItems, {title = "DNS: " .. dns, fn = copyToClipboard})
         end
+        -- Add VPN connections to the menu
+        if #vpnConnections > 0 then
+            table.insert(menuItems, {title = "VPN Connections:", disabled = true})
+            for _, vpn in ipairs(vpnConnections) do
+                table.insert(menuItems, {title = vpn.name .. ": " .. vpn.ip, fn = copyToClipboard})
+            end
+        end
         table.insert(menuItems, {title = "📇 ISP: " .. ISP, fn = copyToClipboard})
         table.insert(menuItems, {title = "📍 Country: " .. country .. ", " .. countryCode, fn = copyToClipboard})
+
 
         -- Add refresh option
         table.insert(menuItems, {title = "Refresh", fn = callRefresh})
