@@ -18,6 +18,7 @@ obj.terse = true
 
 -- Previous state to detect changes
 local previousState = {}
+local isFirstRun = true
 
 --- Callback function for menu items to call refreshIP method
 function callRefresh(modifiers, payload)
@@ -165,13 +166,17 @@ function obj:refreshIP()
         country = country
     }
 
-    for key, value in pairs(currentState) do
-        if previousState[key] ~= value then
-            hs.notify.new({
-                title = "NetworkInfo Update",
-                informativeText = string.format("%s changed to: %s", key, value)
-            }):send()
+    if not isFirstRun then
+        for key, value in pairs(currentState) do
+            if previousState[key] ~= value then
+                hs.notify.new({
+                    title = "NetworkInfo Update",
+                    informativeText = string.format("%s changed to: %s", key, value)
+                }):send()
+            end
         end
+    else
+        isFirstRun = false
     end
 
     previousState = currentState
@@ -197,7 +202,6 @@ function obj:refreshIP()
         table.insert(menuItems, {title = "📇 ISP: " .. ISP, fn = copyToClipboard})
         table.insert(menuItems, {title = "📍 Country: " .. country .. ", " .. countryCode, fn = copyToClipboard})
 
-
         -- Add refresh option
         table.insert(menuItems, {title = "Refresh", fn = callRefresh})
     else
@@ -216,6 +220,7 @@ end
 function obj:start()
     -- Initialize menu
     self.menu = hs.menubar.new()
+    isFirstRun = true  -- Reset isFirstRun flag
     self:refreshIP()
 
     -- Refresh the menu every 120 seconds
