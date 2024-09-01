@@ -26,22 +26,26 @@ local function copyToClipboard(_, payload)
     hs.pasteboard.writeObjects(payload.title:match(":%s*(.+)"))
 end
 
-local function getGeoIPData()
-    local status, data = hs.http.get(GEOIP_SERVICE_URL)
-    if status == 200 and data then
-        local decodedJSON = hs.json.decode(data)
-        if decodedJSON then
-            return decodedJSON
+local function getGeoIPData(callback)
+    hs.http.asyncGet(GEOIP_SERVICE_URL, nil, function(status, data)
+        local result
+        if status == 200 and data then
+            local decodedJSON = hs.json.decode(data)
+            if decodedJSON then
+                result = decodedJSON
+            end
+        else
+            result = {
+                err = status == 0 and "No internet connection or DNS issue" or
+                      status == 429 and "Rate limited. Retrying..." or
+                      "Failed to fetch data. HTTP status: " .. tostring(status),
+                errMsg = status == 429 and "Throttled. Retrying..." or "N/A",
+                httpStatus = status,
+                rawData = data or ""
+            }
         end
-    end
-    return {
-        err = status == 0 and "No internet connection or DNS issue" or
-              status == 429 and "Rate limited. Retrying..." or
-              "Failed to fetch data. HTTP status: " .. tostring(status),
-        errMsg = status == 429 and "Throttled. Retrying..." or "N/A",
-        httpStatus = status,
-        rawData = data or ""
-    }
+        callback(result)
+    end)
 end
 
 local function getLocalIPAddress()
@@ -97,68 +101,69 @@ end
 
 -- Main functions
 function obj:refreshIP()
-    local geoIPData = getGeoIPData()
-    local localIP = getLocalIPAddress()
-    local dnsInfo = getDNSInfo()
-    local ssid = getCurrentSSID()
-    local vpnConnections = getVPNConnections()
+    getGeoIPData(function(geoIPData)
+        local localIP = getLocalIPAddress()
+        local dnsInfo = getDNSInfo()
+        local ssid = getCurrentSSID()
+        local vpnConnections = getVPNConnections()
 
-    local currentState = {
-        ssid = ssid,
-        publicIP = geoIPData.query,
-        localIP = localIP,
-        dnsInfo = table.concat(dnsInfo, ", "),
-        ISP = geoIPData.isp,
-        country = geoIPData.country
-    }
+        local currentState = {
+            ssid = ssid,
+            publicIP = geoIPData.query,
+            localIP = localIP,
+            dnsInfo = table.concat(dnsInfo, ", "),
+            ISP = geoIPData.isp,
+            country = geoIPData.country
+        }
 
-    if not isFirstRun then
-        for key, value in pairs(currentState) do
-            if previousState[key] ~= value then
-                hs.notify.new({
-                    title = "NetworkInfo Update",
-                    informativeText = string.format("%s changed to: %s", key, value)
-                }):send()
+        if not isFirstRun then
+            for key, value in pairs(currentState) do
+                if previousState[key] ~= value then
+                    hs.notify.new({
+                        title = "NetworkInfo Update",
+                        informativeText = string.format("%s changed to: %s", key, value)
+                    }):send()
+                end
+            end
+        else
+            isFirstRun = false
+        end
+
+        previousState = currentState
+
+        local menuItems = {}
+
+        if not geoIPData.err then
+            table.insert(menuItems, {title = "🌍 Public IP: " .. geoIPData.query, fn = copyToClipboard})
+            table.insert(menuItems, {title = "💻 Local IP: " .. localIP, fn = copyToClipboard})
+            table.insert(menuItems, {title = "📶 SSID: " .. ssid, fn = copyToClipboard})
+            table.insert(menuItems, {title = "🔒 DNS Servers:", disabled = true})
+            for _, dns in ipairs(dnsInfo) do
+                table.insert(menuItems, {title = "  • " .. dns, fn = copyToClipboard, indent = 1})
+            end
+            if #vpnConnections > 0 then
+                table.insert(menuItems, {title = "🔐 VPN Connections:", disabled = true})
+                for _, vpn in ipairs(vpnConnections) do
+                    table.insert(menuItems, {title = string.format("  • %s: %s", vpn.name, vpn.ip), fn = copyToClipboard, indent = 1})
+                end
+            end
+            table.insert(menuItems, {title = "-"})
+            table.insert(menuItems, {title = "📇 ISP: " .. geoIPData.isp, fn = copyToClipboard})
+            table.insert(menuItems, {title = "📍 Location: " .. geoIPData.country .. " (" .. geoIPData.countryCode .. ")", fn = copyToClipboard})
+        else
+            table.insert(menuItems, {title = "⚠️ " .. geoIPData.errMsg, fn = copyToClipboard, disabled = false})
+            table.insert(menuItems, {title = "Check logs for more details.", disabled = true})
+            if geoIPData.httpStatus == 429 then
+                hs.timer.doAfter(RETRY_DELAY, function() self:refreshIP() end)
             end
         end
-    else
-        isFirstRun = false
-    end
 
-    previousState = currentState
-
-    local menuItems = {}
-
-    if not geoIPData.err then
-        table.insert(menuItems, {title = "🌍 Public IP: " .. geoIPData.query, fn = copyToClipboard})
-        table.insert(menuItems, {title = "💻 Local IP: " .. localIP, fn = copyToClipboard})
-        table.insert(menuItems, {title = "📶 SSID: " .. ssid, fn = copyToClipboard})
-        table.insert(menuItems, {title = "🔒 DNS Servers:", disabled = true})
-        for _, dns in ipairs(dnsInfo) do
-            table.insert(menuItems, {title = "  • " .. dns, fn = copyToClipboard, indent = 1})
-        end
-        if #vpnConnections > 0 then
-            table.insert(menuItems, {title = "🔐 VPN Connections:", disabled = true})
-            for _, vpn in ipairs(vpnConnections) do
-                table.insert(menuItems, {title = string.format("  • %s: %s", vpn.name, vpn.ip), fn = copyToClipboard, indent = 1})
-            end
-        end
         table.insert(menuItems, {title = "-"})
-        table.insert(menuItems, {title = "📇 ISP: " .. geoIPData.isp, fn = copyToClipboard})
-        table.insert(menuItems, {title = "📍 Location: " .. geoIPData.country .. " (" .. geoIPData.countryCode .. ")", fn = copyToClipboard})
-    else
-        table.insert(menuItems, {title = "⚠️ " .. geoIPData.errMsg, fn = copyToClipboard, disabled = false})
-        table.insert(menuItems, {title = "Check logs for more details.", disabled = true})
-        if geoIPData.httpStatus == 429 then
-            hs.timer.doAfter(RETRY_DELAY, function() self:refreshIP() end)
-        end
-    end
+        table.insert(menuItems, {title = "🔄 Refresh", fn = function() self:refreshIP() end})
 
-    table.insert(menuItems, {title = "-"})
-    table.insert(menuItems, {title = "🔄 Refresh", fn = function() self:refreshIP() end})
-
-    self.menu:setTitle("🔗")
-    self.menu:setMenu(menuItems)
+        self.menu:setTitle("🔗")
+        self.menu:setMenu(menuItems)
+    end)
 end
 
 function obj:start()
