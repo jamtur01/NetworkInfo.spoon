@@ -58,7 +58,7 @@ local function getDNSInfo()
     local uniqueDNS = {}
 
     local function addDNS(dns)
-        if not uniqueDNS[dns] then
+        if dns and not uniqueDNS[dns] then
             table.insert(dnsInfo, dns)
             uniqueDNS[dns] = true
         end
@@ -66,21 +66,25 @@ local function getDNSInfo()
 
     -- Manual DNS
     local manualDNS = hs.execute("networksetup -getdnsservers Wi-Fi"):gsub("\n", "")
-    if manualDNS:find("There aren't any DNS Servers set") then
-        table.insert(dnsInfo, "No manually configured DNS")
-    else
+    if manualDNS and not manualDNS:find("There aren't any DNS Servers set") then
         for dns in manualDNS:gmatch("%S+") do
+            addDNS(dns)
+        end
+    else
+        table.insert(dnsInfo, "No manually configured DNS")
+    end
+
+    -- DHCP/Automatic DNS
+    local scutilOutput = hs.execute("scutil --dns")
+    if scutilOutput then
+        for dns in scutilOutput:gmatch("nameserver%[%d+%] : (%S+)") do
             addDNS(dns)
         end
     end
 
-    -- DHCP/Automatic DNS
-    for dns in hs.execute("scutil --dns"):gmatch("nameserver%[%d+%] : (%S+)") do
-        addDNS(dns)
-    end
-
     return dnsInfo
 end
+
 
 local function getCurrentSSID()
     return hs.wifi.currentNetwork() or "Not connected"
@@ -102,6 +106,13 @@ end
 -- Main functions
 function obj:refreshIP()
     getGeoIPData(function(geoIPData)
+        if not geoIPData or geoIPData.err then
+            -- Handle the error gracefully
+            local errMsg = geoIPData and geoIPData.err or "Failed to fetch GeoIP data."
+            hs.notify.new({title = "NetworkInfo Error", informativeText = errMsg}):send()
+            return
+        end
+
         local localIP = getLocalIPAddress()
         local dnsInfo = getDNSInfo()
         local ssid = getCurrentSSID()
@@ -111,7 +122,7 @@ function obj:refreshIP()
             ssid = ssid,
             publicIP = geoIPData.query,
             localIP = localIP,
-            dnsInfo = table.concat(dnsInfo, ", "),
+            dnsInfo = dnsInfo and table.concat(dnsInfo, ", ") or "N/A",
             ISP = geoIPData.isp,
             country = geoIPData.country
         }
@@ -133,35 +144,28 @@ function obj:refreshIP()
 
         local menuItems = {}
 
-        if not geoIPData.err then
-            table.insert(menuItems, {title = "🌍 Public IP: " .. geoIPData.query, fn = copyToClipboard})
-            table.insert(menuItems, {title = "💻 Local IP: " .. localIP, fn = copyToClipboard})
-            table.insert(menuItems, {title = "📶 SSID: " .. ssid, fn = copyToClipboard})
-            table.insert(menuItems, {title = "🔒 DNS Servers:", disabled = true})
-            for _, dns in ipairs(dnsInfo) do
-                table.insert(menuItems, {title = "  • " .. dns, fn = copyToClipboard, indent = 1})
-            end
-            if #vpnConnections > 0 then
-                table.insert(menuItems, {title = "🔐 VPN Connections:", disabled = true})
-                for _, vpn in ipairs(vpnConnections) do
-                    table.insert(menuItems, {title = string.format("  • %s: %s", vpn.name, vpn.ip), fn = copyToClipboard, indent = 1})
-                end
-            end
-            table.insert(menuItems, {title = "-"})
-            table.insert(menuItems, {title = "📇 ISP: " .. geoIPData.isp, fn = copyToClipboard})
-            table.insert(menuItems, {title = "📍 Location: " .. geoIPData.country .. " (" .. geoIPData.countryCode .. ")", fn = copyToClipboard})
-        else
-            table.insert(menuItems, {title = "⚠️ " .. geoIPData.errMsg, fn = copyToClipboard, disabled = false})
-            table.insert(menuItems, {title = "Check logs for more details.", disabled = true})
-            if geoIPData.httpStatus == 429 then
-                hs.timer.doAfter(RETRY_DELAY, function() self:refreshIP() end)
+        table.insert(menuItems, {title = "🌍 Public IP: " .. (geoIPData.query or "N/A"), fn = copyToClipboard})
+        table.insert(menuItems, {title = "💻 Local IP: " .. (localIP or "N/A"), fn = copyToClipboard})
+        table.insert(menuItems, {title = "📶 SSID: " .. (ssid or "N/A"), fn = copyToClipboard})
+        table.insert(menuItems, {title = "🔒 DNS Servers:", disabled = true})
+        for _, dns in ipairs(dnsInfo or {}) do
+            table.insert(menuItems, {title = "  • " .. dns, fn = copyToClipboard, indent = 1})
+        end
+        if #vpnConnections > 0 then
+            table.insert(menuItems, {title = "🔐 VPN Connections:", disabled = true})
+            for _, vpn in ipairs(vpnConnections) do
+                table.insert(menuItems, {title = string.format("  • %s: %s", vpn.name, vpn.ip), fn = copyToClipboard, indent = 1})
             end
         end
+        table.insert(menuItems, {title = "-"})
+        table.insert(menuItems, {title = "📇 ISP: " .. (geoIPData.isp or "N/A"), fn = copyToClipboard})
+        table.insert(menuItems, {title = "📍 Location: " .. (geoIPData.country or "N/A") .. " (" .. (geoIPData.countryCode or "N/A") .. ")", fn = copyToClipboard})
 
         table.insert(menuItems, {title = "-"})
         table.insert(menuItems, {title = "🔄 Refresh", fn = function() self:refreshIP() end})
 
         self.menu:setTitle("🔗")
+        self.menu:setTooltip("NetworkInfo")
         self.menu:setMenu(menuItems)
     end)
 end
