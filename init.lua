@@ -7,7 +7,7 @@ obj.__index = obj
 
 -- Metadata
 obj.name = "NetworkInfo"
-obj.version = "1.8"
+obj.version = "1.9"
 obj.author = "James Turnbull <james@lovedthanlost.net>"
 obj.license = "MIT - https://opensource.org/licenses/MIT"
 obj.homepage = "https://github.com/jamtur01/NetworkInfo.spoon"
