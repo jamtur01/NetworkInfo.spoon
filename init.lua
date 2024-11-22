@@ -7,7 +7,7 @@ obj.__index = obj
 
 -- Metadata
 obj.name = "NetworkInfo"
-obj.version = "1.9"
+obj.version = "2.0"
 obj.author = "James Turnbull <james@lovedthanlost.net>"
 obj.license = "MIT - https://opensource.org/licenses/MIT"
 obj.homepage = "https://github.com/jamtur01/NetworkInfo.spoon"
@@ -85,7 +85,6 @@ local function getDNSInfo()
     return dnsInfo
 end
 
-
 local function getCurrentSSID()
     return hs.wifi.currentNetwork() or "Not connected"
 end
@@ -103,11 +102,22 @@ local function getVPNConnections()
     return vpnConnections
 end
 
+-- New: Check if Unbound and Kresd services are running
+local function checkService(label)
+    local output = hs.execute("launchctl list | grep -q '" .. label .. "' && echo 'running' || echo 'stopped'")
+    return output:match("running") and true or false
+end
+
+-- New: Test DNS resolution
+local function testDNSResolution()
+    local result = hs.execute("dig @127.0.0.1 example.com +short")
+    return result ~= nil and result:match("%d+%.%d+%.%d+%.%d+")
+end
+
 -- Main functions
 function obj:refreshIP()
     getGeoIPData(function(geoIPData)
         if not geoIPData or geoIPData.err then
-            -- Handle the error gracefully
             local errMsg = geoIPData and geoIPData.err or "Failed to fetch GeoIP data."
             hs.notify.new({title = "NetworkInfo Error", informativeText = errMsg}):send()
             return
@@ -118,13 +128,21 @@ function obj:refreshIP()
         local ssid = getCurrentSSID()
         local vpnConnections = getVPNConnections()
 
+        -- Check Unbound and Kresd services
+        local unboundRunning = checkService("org.cronokirby.unbound")
+        local kresdRunning = checkService("org.knot-resolver.kresd")
+        local dnsResolutionWorking = testDNSResolution()
+
         local currentState = {
             ssid = ssid,
             publicIP = geoIPData.query,
             localIP = localIP,
             dnsInfo = dnsInfo and table.concat(dnsInfo, ", ") or "N/A",
             ISP = geoIPData.isp,
-            country = geoIPData.country
+            country = geoIPData.country,
+            unboundStatus = unboundRunning and "Running" or "Stopped",
+            kresdStatus = kresdRunning and "Running" or "Stopped",
+            dnsResolution = dnsResolutionWorking and "Working" or "Failed"
         }
 
         if not isFirstRun then
@@ -157,6 +175,11 @@ function obj:refreshIP()
                 table.insert(menuItems, {title = string.format("  • %s: %s", vpn.name, vpn.ip), fn = copyToClipboard, indent = 1})
             end
         end
+        table.insert(menuItems, {title = "-"})
+        table.insert(menuItems, {title = "🔄 Service Status:", disabled = true})
+        table.insert(menuItems, {title = "  • Unbound: " .. currentState.unboundStatus, indent = 1})
+        table.insert(menuItems, {title = "  • Kresd: " .. currentState.kresdStatus, indent = 1})
+        table.insert(menuItems, {title = "  • DNS Resolution: " .. currentState.dnsResolution, indent = 1})
         table.insert(menuItems, {title = "-"})
         table.insert(menuItems, {title = "📇 ISP: " .. (geoIPData.isp or "N/A"), fn = copyToClipboard})
         table.insert(menuItems, {title = "📍 Location: " .. (geoIPData.country or "N/A") .. " (" .. (geoIPData.countryCode or "N/A") .. ")", fn = copyToClipboard})
