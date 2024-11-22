@@ -127,7 +127,6 @@ function obj:refreshIP()
         local ssid = getCurrentSSID()
         local vpnConnections = getVPNConnections()
 
-        -- Check Unbound and Kresd services
         local unboundRunning = checkService("org.cronokirby.unbound")
         local kresdRunning = checkService("org.knot-resolver.kresd")
         local dnsResolutionWorking = testDNSResolution()
