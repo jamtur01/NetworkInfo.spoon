@@ -102,13 +102,12 @@ local function getVPNConnections()
     return vpnConnections
 end
 
--- New: Check if Unbound and Kresd services are running
 local function checkService(label)
-    local output = hs.execute("launchctl list | grep -q '" .. label .. "' && echo 'running' || echo 'stopped'")
-    return output:match("running") and true or false
+    local output = hs.execute("launchctl print system/" .. label .. " 2>&1 | grep -q 'could not find service' && echo 'Not Running' || echo 'Running'")
+    return output:match("Running") and true or false
 end
 
--- New: Test DNS resolution
+
 local function testDNSResolution()
     local result = hs.execute("dig @127.0.0.1 example.com +short")
     return result ~= nil and result:match("%d+%.%d+%.%d+%.%d+")
