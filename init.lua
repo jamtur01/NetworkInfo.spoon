@@ -1,13 +1,9 @@
---- === NetworkInfo ===
----
---- A drop-down menu listing your public IP information, current DNS servers, Wi-Fi SSID, and VPN details.
-
 local obj = {}
 obj.__index = obj
 
 -- Metadata
 obj.name = "NetworkInfo"
-obj.version = "2.0"
+obj.version = "2.2"
 obj.author = "James Turnbull <james@lovedthanlost.net>"
 obj.license = "MIT - https://opensource.org/licenses/MIT"
 obj.homepage = "https://github.com/jamtur01/NetworkInfo.spoon"
@@ -15,194 +11,275 @@ obj.homepage = "https://github.com/jamtur01/NetworkInfo.spoon"
 -- Constants
 local GEOIP_SERVICE_URL = "http://ip-api.com/json/"
 local REFRESH_INTERVAL = 120 -- seconds
-local RETRY_DELAY = 30 -- seconds
+local SERVICE_CHECK_INTERVAL = 30 -- seconds
+local EXPECTED_DNS = "127.0.0.1"
+local TEST_DOMAINS = {"example.com", "google.com", "cloudflare.com"} -- Multiple domains for DNS testing
 
 -- State variables
-local previousState = {}
-local isFirstRun = true
+local serviceStates = {
+    unbound = { pid = nil, running = false, responding = false },
+    kresd = { pid = nil, running = false, responding = false }
+}
+local data = {
+    geoIPData = nil,
+    dnsInfo = nil,
+    dnsTest = nil,
+    localIP = nil,
+    ssid = nil,
+    vpnConnections = nil
+}
 
 -- Helper functions
 local function copyToClipboard(_, payload)
     hs.pasteboard.writeObjects(payload.title:match(":%s*(.+)"))
 end
 
-local function getGeoIPData(callback)
-    hs.http.asyncGet(GEOIP_SERVICE_URL, nil, function(status, data)
-        local result
-        if status == 200 and data then
-            local decodedJSON = hs.json.decode(data)
-            if decodedJSON then
-                result = decodedJSON
-            end
+local function updateMenu(menuItems)
+    if obj.menu then
+        obj.menu:setMenu(menuItems)
+    end
+end
+
+local function addMenuItem(menuItems, item)
+    table.insert(menuItems, item)
+    updateMenu(menuItems)
+end
+
+-- Asynchronous data fetching functions
+local function getGeoIPData()
+    hs.http.asyncGet(GEOIP_SERVICE_URL, nil, function(status, response)
+        if status == 200 then
+            data.geoIPData = hs.json.decode(response)
         else
-            result = {
-                err = status == 0 and "No internet connection or DNS issue" or
-                      status == 429 and "Rate limited. Retrying..." or
-                      "Failed to fetch data. HTTP status: " .. tostring(status),
-                errMsg = status == 429 and "Throttled. Retrying..." or "N/A",
-                httpStatus = status,
-                rawData = data or ""
-            }
+            data.geoIPData = { query = "N/A", isp = "N/A", country = "N/A", countryCode = "N/A" }
         end
-        callback(result)
+        obj:buildMenu()
     end)
 end
 
 local function getLocalIPAddress()
-    local details = hs.network.interfaceDetails("en0")
-    return details and details.IPv4 and details.IPv4.Addresses and details.IPv4.Addresses[1] or "N/A"
-end
-
-local function getDNSInfo()
-    local dnsInfo = {}
-    local uniqueDNS = {}
-
-    local function addDNS(dns)
-        if dns and not uniqueDNS[dns] then
-            table.insert(dnsInfo, dns)
-            uniqueDNS[dns] = true
-        end
-    end
-
-    -- Manual DNS
-    local manualDNS = hs.execute("networksetup -getdnsservers Wi-Fi"):gsub("\n", "")
-    if manualDNS and not manualDNS:find("There aren't any DNS Servers set") then
-        for dns in manualDNS:gmatch("%S+") do
-            addDNS(dns)
-        end
-    else
-        table.insert(dnsInfo, "No manually configured DNS")
-    end
-
-    -- DHCP/Automatic DNS
-    local scutilOutput = hs.execute("scutil --dns")
-    if scutilOutput then
-        for dns in scutilOutput:gmatch("nameserver%[%d+%] : (%S+)") do
-            addDNS(dns)
-        end
-    end
-
-    return dnsInfo
+    hs.task.new("/bin/sh", function(exitCode, stdOut, stdErr)
+        data.localIP = stdOut:match("%d+%.%d+%.%d+%.%d+") or "N/A"
+        obj:buildMenu()
+    end, {"-c", "ipconfig getifaddr en0"}):start()
 end
 
 local function getCurrentSSID()
-    return hs.wifi.currentNetwork() or "Not connected"
+    hs.task.new("/bin/sh", function(exitCode, stdOut, stdErr)
+        data.ssid = stdOut:gsub("\n", "") or "Not connected"
+        obj:buildMenu()
+    end, {"-c", "/System/Library/PrivateFrameworks/Apple80211.framework/Resources/airport -I | awk '/ SSID/ {print substr($0, index($0, $2))}'"}):start()
 end
 
 local function getVPNConnections()
-    local vpnConnections = {}
-    for _, interface in ipairs(hs.network.interfaces()) do
-        if interface:match("^utun%d+$") then
-            local details = hs.network.interfaceDetails(interface)
-            if details and details.IPv4 and details.IPv4.Addresses then
-                table.insert(vpnConnections, {name = interface, ip = details.IPv4.Addresses[1]})
+    hs.task.new("/bin/sh", function(exitCode, stdOut, stdErr)
+        local vpnConnections = {}
+        for line in stdOut:gmatch("[^\r\n]+") do
+            local interface, ip = line:match("^(%S+):%s*(%S+)")
+            if interface and ip then
+                table.insert(vpnConnections, { name = interface, ip = ip })
             end
         end
-    end
-    return vpnConnections
+        data.vpnConnections = vpnConnections
+        obj:buildMenu()
+    end, {"-c", "ifconfig | awk '/^utun/ { iface=$1 } /inet / && iface ~ /^utun/ { print iface \": \" $2 }'"}):start()
 end
 
-local function checkService(label)
-    local output = hs.execute("launchctl print system/" .. label .. " 2>&1 | grep -q 'could not find service' && echo 'Not Running' || echo 'Running'")
-    return output:match("Running") and true or false
+local function getDNSInfo()
+    hs.task.new("/bin/sh", function(exitCode, stdOut, stdErr)
+        local dnsInfo = {}
+        local uniqueDNS = {}
+        for dns in stdOut:gmatch("%S+") do
+            if not uniqueDNS[dns] then
+                uniqueDNS[dns] = true
+                table.insert(dnsInfo, dns)
+            end
+        end
+        data.dnsInfo = dnsInfo
+        obj:buildMenu()
+    end, {"-c", "scutil --dns | grep 'nameserver\\[[0-9]*\\]' | awk '{print $3}'"}):start()
 end
-
 
 local function testDNSResolution()
-    local result = hs.execute("dig @127.0.0.1 example.com +short")
-    return result ~= nil and result:match("%d+%.%d+%.%d+%.%d+")
+    local results = {}
+    local completed = 0
+    for _, domain in ipairs(TEST_DOMAINS) do
+        hs.task.new("/usr/bin/dig", function(exitCode, stdOut, stdErr)
+            completed = completed + 1
+            local success = stdOut:match("%d+%.%d+%.%d+%.%d+") ~= nil
+            results[domain] = { success = success, response = stdOut }
+            if completed == #TEST_DOMAINS then
+                local successes = 0
+                for _, result in pairs(results) do
+                    if result.success then
+                        successes = successes + 1
+                    end
+                end
+                data.dnsTest = {
+                    working = successes > 0,
+                    successRate = successes / #TEST_DOMAINS * 100,
+                    details = results
+                }
+                obj:buildMenu()
+            end
+        end, {"@127.0.0.1", domain, "+short", "+time=2"}):start()
+    end
 end
 
--- Main functions
-function obj:refreshIP()
-    getGeoIPData(function(geoIPData)
-        if not geoIPData or geoIPData.err then
-            local errMsg = geoIPData and geoIPData.err or "Failed to fetch GeoIP data."
-            hs.notify.new({title = "NetworkInfo Error", informativeText = errMsg}):send()
-            return
-        end
-
-        local localIP = getLocalIPAddress()
-        local dnsInfo = getDNSInfo()
-        local ssid = getCurrentSSID()
-        local vpnConnections = getVPNConnections()
-
-        local unboundRunning = checkService("org.cronokirby.unbound")
-        local kresdRunning = checkService("org.knot-resolver.kresd")
-        local dnsResolutionWorking = testDNSResolution()
-
-        local currentState = {
-            ssid = ssid,
-            publicIP = geoIPData.query,
-            localIP = localIP,
-            dnsInfo = dnsInfo and table.concat(dnsInfo, ", ") or "N/A",
-            ISP = geoIPData.isp,
-            country = geoIPData.country,
-            unboundStatus = unboundRunning and "Running" or "Stopped",
-            kresdStatus = kresdRunning and "Running" or "Stopped",
-            dnsResolution = dnsResolutionWorking and "Working" or "Failed"
-        }
-
-        if not isFirstRun then
-            for key, value in pairs(currentState) do
-                if previousState[key] ~= value then
-                    hs.notify.new({
-                        title = "NetworkInfo Update",
-                        informativeText = string.format("%s changed to: %s", key, value)
-                    }):send()
-                end
-            end
+local function getServiceInfo(service, label)
+    hs.task.new("/bin/launchctl", function(exitCode, stdOut, stdErr)
+        local info = {}
+        if stdOut:match("could not find service") then
+            info.running = false
+            info.pid = nil
         else
-            isFirstRun = false
+            info.running = stdOut:match("state = running") ~= nil
+            info.pid = tonumber(stdOut:match("pid = (%d+)"))
         end
+        serviceStates[service].running = info.running
+        serviceStates[service].pid = info.pid
+        obj:checkServiceResponse(service)
+    end, {"print", "system/" .. label}):start()
+end
 
-        previousState = currentState
-
-        local menuItems = {}
-
-        table.insert(menuItems, {title = "🌍 Public IP: " .. (geoIPData.query or "N/A"), fn = copyToClipboard})
-        table.insert(menuItems, {title = "💻 Local IP: " .. (localIP or "N/A"), fn = copyToClipboard})
-        table.insert(menuItems, {title = "📶 SSID: " .. (ssid or "N/A"), fn = copyToClipboard})
-        table.insert(menuItems, {title = "🔒 DNS Servers:", disabled = true})
-        for _, dns in ipairs(dnsInfo or {}) do
-            table.insert(menuItems, {title = "  • " .. dns, fn = copyToClipboard, indent = 1})
+function obj:checkServiceResponse(service)
+    local server = "127.0.0.1"
+    local port = service == "unbound" and "53" or "53153"
+    hs.task.new("/usr/bin/dig", function(exitCode, stdOut, stdErr)
+        local responding = stdOut:match("%d+%.%d+%.%d+%.%d+") ~= nil
+        local prevState = serviceStates[service].responding
+        serviceStates[service].responding = responding
+        if prevState ~= responding then
+            local status = string.format("%s: %s (PID: %s) - %s",
+                service,
+                serviceStates[service].running and "Running" or "Stopped",
+                serviceStates[service].pid or "N/A",
+                responding and "Responding" or "Not Responding"
+            )
+            hs.notify.new({
+                title = "DNS Service Status Change",
+                informativeText = status
+            }):send()
         end
-        if #vpnConnections > 0 then
-            table.insert(menuItems, {title = "🔐 VPN Connections:", disabled = true})
-            for _, vpn in ipairs(vpnConnections) do
-                table.insert(menuItems, {title = string.format("  • %s: %s", vpn.name, vpn.ip), fn = copyToClipboard, indent = 1})
-            end
+        obj:buildMenu()
+    end, {"@" .. server, "-p", port, "example.com", "+short", "+time=2"}):start()
+end
+
+function obj:monitorServices()
+    local services = {
+        unbound = "org.cronokirby.unbound",
+        kresd = "org.knot-resolver.kresd"
+    }
+    for service, label in pairs(services) do
+        getServiceInfo(service, label)
+    end
+end
+
+function obj:buildMenu()
+    local menuItems = {}
+
+    -- Public IP
+    local publicIP = data.geoIPData and data.geoIPData.query or "N/A"
+    addMenuItem(menuItems, { title = "🌍 Public IP: " .. publicIP, fn = copyToClipboard })
+
+    -- Local IP
+    local localIP = data.localIP or "N/A"
+    addMenuItem(menuItems, { title = "💻 Local IP: " .. localIP, fn = copyToClipboard })
+
+    -- SSID
+    local ssid = data.ssid or "Not connected"
+    addMenuItem(menuItems, { title = "📶 SSID: " .. ssid, fn = copyToClipboard })
+
+    -- DNS Configuration
+    if data.dnsInfo then
+        addMenuItem(menuItems, { title = "-" })
+        addMenuItem(menuItems, { title = "🔒 DNS Configuration:", disabled = true })
+        for _, dns in ipairs(data.dnsInfo) do
+            local icon = dns == EXPECTED_DNS and "✅" or "⚠️"
+            addMenuItem(menuItems, { title = string.format("  %s %s", icon, dns), fn = copyToClipboard, indent = 1 })
         end
-        table.insert(menuItems, {title = "-"})
-        table.insert(menuItems, {title = "🔄 Service Status:", disabled = true})
-        table.insert(menuItems, {title = "  • Unbound: " .. currentState.unboundStatus, indent = 1})
-        table.insert(menuItems, {title = "  • Kresd: " .. currentState.kresdStatus, indent = 1})
-        table.insert(menuItems, {title = "  • DNS Resolution: " .. currentState.dnsResolution, indent = 1})
-        table.insert(menuItems, {title = "-"})
-        table.insert(menuItems, {title = "📇 ISP: " .. (geoIPData.isp or "N/A"), fn = copyToClipboard})
-        table.insert(menuItems, {title = "📍 Location: " .. (geoIPData.country or "N/A") .. " (" .. (geoIPData.countryCode or "N/A") .. ")", fn = copyToClipboard})
+    end
 
-        table.insert(menuItems, {title = "-"})
-        table.insert(menuItems, {title = "🔄 Refresh", fn = function() self:refreshIP() end})
+    -- VPN Connections
+    if data.vpnConnections and #data.vpnConnections > 0 then
+        addMenuItem(menuItems, { title = "-" })
+        addMenuItem(menuItems, { title = "🔐 VPN Connections:", disabled = true })
+        for _, vpn in ipairs(data.vpnConnections) do
+            addMenuItem(menuItems, { title = string.format("  • %s: %s", vpn.name, vpn.ip), fn = copyToClipboard, indent = 1 })
+        end
+    end
 
-        self.menu:setTitle("🔗")
-        self.menu:setTooltip("NetworkInfo")
-        self.menu:setMenu(menuItems)
-    end)
+    -- Service Status
+    addMenuItem(menuItems, { title = "-" })
+    addMenuItem(menuItems, { title = "🔄 Service Status:", disabled = true })
+    for service, state in pairs(serviceStates) do
+        addMenuItem(menuItems, {
+            title = string.format("  • %s: %s (PID: %s) - %s",
+                service:gsub("^%l", string.upper),
+                state.running and "Running" or "Stopped",
+                state.pid or "N/A",
+                state.responding and "Responding" or "Not Responding"
+            ),
+            indent = 1
+        })
+    end
+
+    -- DNS Resolution
+    if data.dnsTest then
+        addMenuItem(menuItems, {
+            title = string.format("  • DNS Resolution: %.1f%% Success Rate", data.dnsTest.successRate),
+            indent = 1
+        })
+    end
+
+    -- ISP and Location
+    local isp = data.geoIPData and data.geoIPData.isp or "N/A"
+    local country = data.geoIPData and data.geoIPData.country or "N/A"
+    local countryCode = data.geoIPData and data.geoIPData.countryCode or "N/A"
+    addMenuItem(menuItems, { title = "-" })
+    addMenuItem(menuItems, { title = "📇 ISP: " .. isp, fn = copyToClipboard })
+    addMenuItem(menuItems, { title = "📍 Location: " .. country .. " (" .. countryCode .. ")", fn = copyToClipboard })
+
+    -- Refresh Option
+    addMenuItem(menuItems, { title = "-" })
+    addMenuItem(menuItems, { title = "🔄 Refresh", fn = function() self:refreshData() end })
+
+    -- Set Menu Title and Tooltip
+    obj.menu:setTitle("🔗")
+    obj.menu:setTooltip("NetworkInfo")
+end
+
+function obj:refreshData()
+    data = {}
+    getGeoIPData()
+    getLocalIPAddress()
+    getCurrentSSID()
+    getVPNConnections()
+    getDNSInfo()
+    testDNSResolution()
+    self:monitorServices()
 end
 
 function obj:start()
     self.menu = hs.menubar.new()
-    isFirstRun = true
-    self:refreshIP()
-    self.timer = hs.timer.doEvery(REFRESH_INTERVAL, function() self:refreshIP() end)
+    self:refreshData()
+    self.refreshTimer = hs.timer.doEvery(REFRESH_INTERVAL, function()
+        self:refreshData()
+    end)
+    self.serviceTimer = hs.timer.doEvery(SERVICE_CHECK_INTERVAL, function()
+        self:monitorServices()
+    end)
     return self
 end
 
 function obj:stop()
-    if self.timer then
-        self.timer:stop()
-        self.timer = nil
+    if self.refreshTimer then
+        self.refreshTimer:stop()
+        self.refreshTimer = nil
+    end
+    if self.serviceTimer then
+        self.serviceTimer:stop()
+        self.serviceTimer = nil
     end
     if self.menu then
         self.menu:delete()
