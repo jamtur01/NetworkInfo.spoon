@@ -65,24 +65,30 @@ local function getLocalIPAddress()
 end
 
 local function getCurrentSSID()
-    hs.task.new("/bin/sh", function(exitCode, stdOut, stdErr)
-        data.ssid = stdOut:gsub("\n", "") or "Not connected"
-        obj:buildMenu()
-    end, {"-c", "/System/Library/PrivateFrameworks/Apple80211.framework/Resources/airport -I | awk '/ SSID/ {print substr($0, index($0, $2))}'"}):start()
+    local ssid = hs.wifi.currentNetwork("en0")
+    data.ssid = ssid or "Not connected"
+    obj:buildMenu()
 end
 
 local function getVPNConnections()
     hs.task.new("/bin/sh", function(exitCode, stdOut, stdErr)
         local vpnConnections = {}
         for line in stdOut:gmatch("[^\r\n]+") do
-            local interface, ip = line:match("^(%S+):%s*(%S+)")
+            local interface, ip = line:match("VPN Interface: (%S+), IP Address: (%S+)")
             if interface and ip then
                 table.insert(vpnConnections, { name = interface, ip = ip })
             end
         end
         data.vpnConnections = vpnConnections
         obj:buildMenu()
-    end, {"-c", "ifconfig | awk '/^utun/ { iface=$1 } /inet / && iface ~ /^utun/ { print iface \": \" $2 }'"}):start()
+    end, {"-c", [[
+        for iface in $(ifconfig -l | grep -o 'utun[0-9]*'); do
+            ip=$(ifconfig "$iface" | awk '/inet / {print $2}')
+            if [ -n "$ip" ]; then
+                echo "VPN Interface: $iface, IP Address: $ip"
+            fi
+        done
+    ]]}):start()
 end
 
 local function getDNSInfo()
