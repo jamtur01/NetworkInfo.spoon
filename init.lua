@@ -219,12 +219,20 @@ function obj:buildMenu()
     addMenuItem(menuItems, { title = "-" })
     addMenuItem(menuItems, { title = "🔄 Service Status:", disabled = true })
     for service, state in pairs(serviceStates) do
+        local runningStatus = state.running and "Running" or "Stopped"
+        local pidInfo = state.pid and (" (PID: " .. state.pid .. ")") or " (PID: N/A)"
+
+        local respondingInfo = ""
+        if state.running then
+            respondingInfo = state.responding and " - Responding" or " - Not Responding"
+        end
+
         addMenuItem(menuItems, {
-            title = string.format("  • %s: %s (PID: %s) - %s",
+            title = string.format("  • %s: %s%s%s",
                 service:gsub("^%l", string.upper),
-                state.running and "Running" or "Stopped",
-                state.pid or "N/A",
-                state.responding and "Responding" or "Not Responding"
+                runningStatus,
+                pidInfo,
+                respondingInfo
             ),
             indent = 1
         })
