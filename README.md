@@ -2,83 +2,179 @@
 
 ## Overview
 
-The `NetworkInfo` Spoon is a Hammerspoon utility that displays essential network information in the macOS menu bar. This includes the current public IP, local IP, ISP, country information, and DNS servers (both manually configured and DHCP/automatic). The information is displayed in a clean, vertical list, and the menu automatically refreshes every 60 seconds.
+The `NetworkInfo` Spoon is a Hammerspoon utility that provides comprehensive network monitoring and DNS management capabilities through the macOS menu bar. It displays essential network information, monitors DNS services, manages per-network DNS configurations, and provides real-time status updates for network changes.
 
 ## Features
 
-- **Public IP Address:** Displays the public IP address of your current network.
-- **Local IP Address:** Shows the local IP address associated with the primary network interface (usually `en0` for Wi-Fi).
-- **SSID Information:** Displays the SSID of the connected Wi-Fi network.
-- **ISP Information:** Lists the ISP providing your Internet connection.
-- **Country Information:** Shows the country and country code based on the public IP.
-- **DNS Servers:** Lists both manually configured and DHCP/automatic DNS servers, with duplicate entries filtered out.
-- **Automatic Refresh:** The menu automatically refreshes every 60 seconds to ensure up-to-date information.
+- **Network Information Display:**
+
+  - Public IP address with geolocation data
+  - Local IP address for primary network interface
+  - Current WiFi SSID
+  - ISP information
+  - Country and location data
+  - Active VPN connections detection
+
+- **DNS Management:**
+
+  - Per-network DNS configuration support
+  - Automatic DNS server switching based on WiFi network
+  - DNS service monitoring (Unbound and Knot Resolver)
+  - DNS resolution testing with multiple domains
+  - Configuration through `~/.config/hammerspoon/dns.conf`
+
+- **Real-time Monitoring:**
+
+  - Automatic refresh every 120 seconds
+  - Service status monitoring every 30 seconds
+  - WiFi network change detection
+  - DNS configuration file watching
+  - Service health notifications
+
+- **User Interface:**
+  - Clean, hierarchical menu organization
+  - Copy-to-clipboard functionality for most values
+  - Status indicators for DNS configuration and services
+  - Manual refresh option
 
 ## Installation
 
 1. **Download the Spoon:**
 
-   - Download the `NetworkInfo.spoon` folder and place it in your Hammerspoon Spoons directory (`~/.hammerspoon/Spoons/`).
+   - Download the `NetworkInfo.spoon` folder
+   - Place it in your Hammerspoon Spoons directory (`~/.hammerspoon/Spoons/`)
 
-2. **Load the Spoon in your Hammerspoon configuration (`init.lua`):**
+2. **Create DNS Configuration:**
 
+   - Create the file `~/.config/hammerspoon/dns.conf`
+   - Add DNS configurations (see Configuration section)
+
+3. **Load the Spoon:**
+   Add to your Hammerspoon configuration (`init.lua`):
    ```lua
    hs.loadSpoon("NetworkInfo")
-   ```
-
-3. **Start the Spoon:**
-   - Add the following line to your Hammerspoon configuration to start the Spoon:
-   ```lua
    spoon.NetworkInfo:start()
    ```
 
-## Usage
-
-Once the Spoon is started, you will see a menu bar item that displays the country code associated with your public IP address. Clicking on the menu bar item will display a dropdown list with the following information:
-
-- 🌍 **Public IP:** The public IP address of your current network.
-- 💻 **Local IP (en0):** The local IP address of your primary network interface.
-- 📶 **SSID:** The current Wifi SSID.
-- **DNS Servers:** A list of DNS servers (both manually configured and DHCP/automatic).
-- 📇 **ISP:** The ISP providing your Internet connection.
-- 📍 **Country:** The country and country code based on the public IP.
-- **Refresh:** A manual refresh option to update the displayed information immediately.
-
 ## Configuration
 
-### Customizing the Refresh Interval
+### DNS Configuration File
 
-You can adjust the automatic refresh interval by modifying the `hs.timer.doEvery` value in the Spoon's `start()` function. By default, the menu refreshes every 120 seconds.
+Create a DNS configuration file at `~/.config/hammerspoon/dns.conf` with the following format:
 
-### Filtering Duplicate DNS Entries
-
-The Spoon includes a built-in mechanism to filter out duplicate DNS entries. If you need to change this behavior, you can modify the `getDNSInfo()` function in the Spoon's `init.lua` file.
-
-## Example
-
-Here’s an example of how to load and start the Spoon in your `init.lua`:
-
-```lua
-hs.loadSpoon("NetworkInfo")
-spoon.NetworkInfo:start()
+```text
+# Format: SSID = DNS_SERVER1 DNS_SERVER2 ...
+HomeNetwork = 1.1.1.1 1.0.0.1
+WorkWifi = 10.0.0.53 8.8.8.8
 ```
+
+Each line specifies:
+
+- The WiFi SSID
+- An equals sign (=)
+- One or more DNS servers, separated by spaces
+
+Comments (lines starting with #) and empty lines are ignored.
+
+### Menu Bar Display
+
+The menu bar shows a chain link icon (🔗) with a tooltip "NetworkInfo". Clicking reveals:
+
+- Public IP address with copy option
+- Local IP address with copy option
+- Current SSID with DNS configuration status
+- DNS server list with validation indicators
+- VPN connection details (when active)
+- Service status for DNS resolvers
+- DNS resolution test results
+- ISP and location information
+- Manual refresh option
+
+### Service Monitoring
+
+The spoon monitors:
+
+- Unbound DNS resolver (org.cronokirby.unbound)
+- Knot Resolver (org.knot-resolver.kresd)
+
+For each service, it tracks:
+
+- Running status
+- Process ID
+- Response status
+- Notifications for status changes
+
+## Advanced Features
+
+### DNS Resolution Testing
+
+The spoon tests DNS resolution using multiple domains:
+
+- example.com
+- google.com
+- cloudflare.com
+
+Results show:
+
+- Success rate percentage
+- Individual test outcomes
+- Response details
+
+### VPN Detection
+
+Automatically detects and displays:
+
+- Active VPN interfaces (utun\*)
+- VPN IP addresses
+- Connection status
+
+### Automatic DNS Management
+
+When connecting to a configured WiFi network:
+
+- Reads DNS configuration from dns.conf
+- Automatically applies DNS settings
+- Sends notification of changes
+- Maintains configuration across network switches
 
 ## Troubleshooting
 
-If you encounter issues such as incorrect or missing network information, try the following steps:
+1. **DNS Configuration Issues:**
 
-1. **Review Logs:**
+   - Verify dns.conf format and permissions
+   - Check system DNS settings: `scutil --dns`
+   - Monitor console for configuration changes
 
-   - Check the Hammerspoon console for any error messages or logs that might indicate the source of the problem.
+2. **Service Monitoring:**
 
-2. **DNS Configuration:**
-   - If DNS entries appear incorrectly or duplicates persist, verify your DNS configuration using `scutil --dns` in the terminal.
+   - Check service status: `launchctl print system/org.cronokirby.unbound`
+   - Verify service response: `dig @127.0.0.1 example.com`
+
+3. **General Issues:**
+   - Review Hammerspoon console for errors
+   - Verify file permissions
+   - Check network interface status
+
+## Version History
+
+Current Version: 2.3
+
+- Added per-network DNS configuration
+- Implemented service monitoring
+- Added VPN detection
+- Enhanced DNS resolution testing
+- Added configuration file watching
 
 ## License
 
-This Spoon is licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for more details.
+This Spoon is licensed under the MIT License. See the [LICENSE](https://opensource.org/licenses/MIT) file for details.
 
 ## Author
 
-- **James Turnbull** - [james@lovedthanlost.net](mailto:james@lovedthanlost.net)
-- Thanks to [senorprogrammer](https://github.com/senorprogrammer) for the [DNS module](https://github.com/senorprogrammer/hammerspoon_init/blob/master/lib/dns.lua) and Sibin Arsenijević's PublicIP Spoon for heavy inspiration.
+James Turnbull <james@lovedthanlost.net>  
+https://github.com/jamtur01/NetworkInfo.spoon
+
+## Credits
+
+- Original DNS module inspiration from [senorprogrammer](https://github.com/senorprogrammer/hammerspoon_init/blob/master/lib/dns.lua)
+- Based on concepts from Sibin Arsenijević's PublicIP Spoon
