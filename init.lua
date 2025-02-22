@@ -3,7 +3,7 @@ obj.__index = obj
 
 -- Metadata
 obj.name = "NetworkInfo"
-obj.version = "2.2"
+obj.version = "2.3"
 obj.author = "James Turnbull <james@lovedthanlost.net>"
 obj.license = "MIT - https://opensource.org/licenses/MIT"
 obj.homepage = "https://github.com/jamtur01/NetworkInfo.spoon"
@@ -14,6 +14,7 @@ local REFRESH_INTERVAL = 120 -- seconds
 local SERVICE_CHECK_INTERVAL = 30 -- seconds
 local EXPECTED_DNS = "127.0.0.1"
 local TEST_DOMAINS = {"example.com", "google.com", "cloudflare.com"} -- Multiple domains for DNS testing
+local DNS_CONFIG_PATH = os.getenv("HOME") .. "/.config/hammerspoon/dns.conf"
 
 -- State variables
 local serviceStates = {
@@ -26,26 +27,81 @@ local data = {
     dnsTest = nil,
     localIP = nil,
     ssid = nil,
-    vpnConnections = nil
+    vpnConnections = nil,
+    dnsConfiguration = nil
 }
+
+-- Cache for last applied DNS configuration
+local lastAppliedDNSConfig = { ssid = nil, servers = nil }
+
+-- Forward declarations
+local updateMenu, addMenuItem, getCurrentSSID
 
 -- Helper functions
 local function copyToClipboard(_, payload)
     hs.pasteboard.writeObjects(payload.title:match(":%s*(.+)"))
 end
 
-local function updateMenu(menuItems)
+function updateMenu(menuItems)
     if obj.menu then
         obj.menu:setMenu(menuItems)
     end
 end
 
-local function addMenuItem(menuItems, item)
+function addMenuItem(menuItems, item)
     table.insert(menuItems, item)
     updateMenu(menuItems)
 end
 
--- Asynchronous data fetching functions
+-- DNS Configuration functions
+local function readDNSConfig(ssid)
+    if not ssid then return nil, false end
+
+    local f = io.open(DNS_CONFIG_PATH, "r")
+    if not f then
+        print("DNS config file not found at " .. DNS_CONFIG_PATH)
+        return nil, false
+    end
+
+    for line in f:lines() do
+        if line:match("^%s*$") or line:match("^%s*#") then
+            goto continue
+        end
+
+        local configSSID, dnsServers = line:match("^%s*(.-)%s*=%s*(.-)%s*$")
+        if configSSID and dnsServers and configSSID == ssid then
+            f:close()
+            return dnsServers, true
+        end
+
+        ::continue::
+    end
+
+    f:close()
+    return nil, false
+end
+
+local function updateDNSSettings(dnsServers)
+    if not dnsServers then return false end
+
+    local dnsArray = {}
+    for server in dnsServers:gmatch("%S+") do
+        table.insert(dnsArray, server)
+    end
+
+    local cmd = string.format("/usr/sbin/networksetup -setdnsservers Wi-Fi %s", table.concat(dnsArray, " "))
+    local success = os.execute(cmd)
+
+    if success then
+        print("DNS update successful: " .. dnsServers)
+        return true
+    else
+        print("Failed to update DNS")
+        return false
+    end
+end
+
+-- Async data fetching functions
 local function getGeoIPData()
     hs.http.asyncGet(GEOIP_SERVICE_URL, nil, function(status, response)
         if status == 200 then
@@ -62,12 +118,6 @@ local function getLocalIPAddress()
         data.localIP = stdOut:match("%d+%.%d+%.%d+%.%d+") or "N/A"
         obj:buildMenu()
     end, {"-c", "ipconfig getifaddr en0"}):start()
-end
-
-local function getCurrentSSID()
-    local ssid = hs.wifi.currentNetwork("en0")
-    data.ssid = ssid or "Not connected"
-    obj:buildMenu()
 end
 
 local function getVPNConnections()
@@ -104,6 +154,46 @@ local function getDNSInfo()
         data.dnsInfo = dnsInfo
         obj:buildMenu()
     end, {"-c", "scutil --dns | grep 'nameserver\\[[0-9]*\\]' | awk '{print $3}'"}):start()
+end
+
+function getCurrentSSID()
+    local ssid = hs.wifi.currentNetwork()
+    data.ssid = ssid or "Not connected"
+
+    if ssid then
+        local dnsServers, configured = readDNSConfig(ssid)
+        if configured then
+            data.dnsConfiguration = {
+                ssid = ssid,
+                servers = dnsServers,
+                configured = true
+            }
+            -- Only update DNS settings if the SSID or DNS servers have changed.
+            if lastAppliedDNSConfig.ssid ~= ssid or lastAppliedDNSConfig.servers ~= dnsServers then
+                if updateDNSSettings(dnsServers) then
+                    hs.notify.new({
+                        title = "Wi-Fi DNS Changed",
+                        informativeText = string.format("Connected to %s with DNS: %s", ssid, dnsServers)
+                    }):send()
+                    lastAppliedDNSConfig.ssid = ssid
+                    lastAppliedDNSConfig.servers = dnsServers
+                end
+            end
+        else
+            data.dnsConfiguration = {
+                ssid = ssid,
+                configured = false
+            }
+            lastAppliedDNSConfig.ssid = nil
+            lastAppliedDNSConfig.servers = nil
+        end
+    else
+        data.dnsConfiguration = nil
+        lastAppliedDNSConfig.ssid = nil
+        lastAppliedDNSConfig.servers = nil
+    end
+
+    obj:buildMenu()
 end
 
 local function testDNSResolution()
@@ -181,6 +271,20 @@ function obj:monitorServices()
     end
 end
 
+-- File watcher for dns.conf changes
+function obj:watchConfigFile()
+    if self.configWatcher then
+        self.configWatcher:stop()
+    end
+    self.configWatcher = hs.pathwatcher.new(DNS_CONFIG_PATH, function(files)
+        print("dns.conf has changed. Reloading DNS configuration.")
+        -- Force a re-read of the configuration.
+        getCurrentSSID()
+    end)
+    self.configWatcher:start()
+end
+
+-- Menu building
 function obj:buildMenu()
     local menuItems = {}
 
@@ -192,16 +296,40 @@ function obj:buildMenu()
     local localIP = data.localIP or "N/A"
     addMenuItem(menuItems, { title = "💻 Local IP: " .. localIP, fn = copyToClipboard })
 
-    -- SSID
+    -- SSID with DNS Configuration
     local ssid = data.ssid or "Not connected"
     addMenuItem(menuItems, { title = "📶 SSID: " .. ssid, fn = copyToClipboard })
 
-    -- DNS Configuration
+    if data.dnsConfiguration then
+        if data.dnsConfiguration.configured then
+            addMenuItem(menuItems, {
+                title = string.format("  ✅ DNS Config: %s", data.dnsConfiguration.servers),
+                fn = copyToClipboard,
+                indent = 1
+            })
+        else
+            addMenuItem(menuItems, {
+                title = "  ⚠️ No Custom DNS Config",
+                disabled = true,
+                indent = 1
+            })
+        end
+    end
+
+    -- DNS Information
     if data.dnsInfo then
         addMenuItem(menuItems, { title = "-" })
         addMenuItem(menuItems, { title = "🔒 DNS Configuration:", disabled = true })
+        local expectedDNS = {}
+        if data.dnsConfiguration and data.dnsConfiguration.configured then
+            for server in data.dnsConfiguration.servers:gmatch("%S+") do
+                expectedDNS[server] = true
+            end
+        else
+            expectedDNS[EXPECTED_DNS] = true
+        end
         for _, dns in ipairs(data.dnsInfo) do
-            local icon = dns == EXPECTED_DNS and "✅" or "⚠️"
+            local icon = expectedDNS[dns] and "✅" or "⚠️"
             addMenuItem(menuItems, { title = string.format("  %s %s", icon, dns), fn = copyToClipboard, indent = 1 })
         end
     end
@@ -221,12 +349,10 @@ function obj:buildMenu()
     for service, state in pairs(serviceStates) do
         local runningStatus = state.running and "Running" or "Stopped"
         local pidInfo = state.pid and (" (PID: " .. state.pid .. ")") or " (PID: N/A)"
-
         local respondingInfo = ""
         if state.running then
             respondingInfo = state.responding and " - Responding" or " - Not Responding"
         end
-
         addMenuItem(menuItems, {
             title = string.format("  • %s: %s%s%s",
                 service:gsub("^%l", string.upper),
@@ -247,12 +373,14 @@ function obj:buildMenu()
     end
 
     -- ISP and Location
-    local isp = data.geoIPData and data.geoIPData.isp or "N/A"
-    local country = data.geoIPData and data.geoIPData.country or "N/A"
-    local countryCode = data.geoIPData and data.geoIPData.countryCode or "N/A"
-    addMenuItem(menuItems, { title = "-" })
-    addMenuItem(menuItems, { title = "📇 ISP: " .. isp, fn = copyToClipboard })
-    addMenuItem(menuItems, { title = "📍 Location: " .. country .. " (" .. countryCode .. ")", fn = copyToClipboard })
+    if data.geoIPData then
+        local isp = data.geoIPData.isp or "N/A"
+        local country = data.geoIPData.country or "N/A"
+        local countryCode = data.geoIPData.countryCode or "N/A"
+        addMenuItem(menuItems, { title = "-" })
+        addMenuItem(menuItems, { title = "📇 ISP: " .. isp, fn = copyToClipboard })
+        addMenuItem(menuItems, { title = "📍 Location: " .. country .. " (" .. countryCode .. ")", fn = copyToClipboard })
+    end
 
     -- Refresh Option
     addMenuItem(menuItems, { title = "-" })
@@ -264,7 +392,9 @@ function obj:buildMenu()
 end
 
 function obj:refreshData()
-    data = {}
+    data = {
+        dnsConfiguration = data.dnsConfiguration  -- Preserve DNS configuration
+    }
     getGeoIPData()
     getLocalIPAddress()
     getCurrentSSID()
@@ -277,12 +407,27 @@ end
 function obj:start()
     self.menu = hs.menubar.new()
     self:refreshData()
+
+    -- Set up WiFi watcher
+    self.wifiWatcher = hs.wifi.watcher.new(function()
+        print("Network configuration changed")
+        getCurrentSSID()
+    end)
+    self.wifiWatcher:start()
+
+    -- Set up file watcher for dns.conf
+    self:watchConfigFile()
+
+    -- Regular refresh timer
     self.refreshTimer = hs.timer.doEvery(REFRESH_INTERVAL, function()
         self:refreshData()
     end)
+
+    -- Service monitoring timer
     self.serviceTimer = hs.timer.doEvery(SERVICE_CHECK_INTERVAL, function()
         self:monitorServices()
     end)
+
     return self
 end
 
@@ -294,6 +439,14 @@ function obj:stop()
     if self.serviceTimer then
         self.serviceTimer:stop()
         self.serviceTimer = nil
+    end
+    if self.wifiWatcher then
+        self.wifiWatcher:stop()
+        self.wifiWatcher = nil
+    end
+    if self.configWatcher then
+        self.configWatcher:stop()
+        self.configWatcher = nil
     end
     if self.menu then
         self.menu:delete()
