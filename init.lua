@@ -3,7 +3,7 @@ obj.__index = obj
 
 -- Metadata
 obj.name = "NetworkInfo"
-obj.version = "2.3"
+obj.version = "2.4"
 obj.author = "James Turnbull <james@lovedthanlost.net>"
 obj.license = "MIT - https://opensource.org/licenses/MIT"
 obj.homepage = "https://github.com/jamtur01/NetworkInfo.spoon"
@@ -11,10 +11,11 @@ obj.homepage = "https://github.com/jamtur01/NetworkInfo.spoon"
 -- Constants
 local GEOIP_SERVICE_URL = "http://ip-api.com/json/"
 local REFRESH_INTERVAL = 120 -- seconds
-local SERVICE_CHECK_INTERVAL = 30 -- seconds
+local SERVICE_CHECK_INTERVAL = 60 -- seconds
 local EXPECTED_DNS = "127.0.0.1"
 local TEST_DOMAINS = {"example.com", "google.com", "cloudflare.com"} -- Multiple domains for DNS testing
 local DNS_CONFIG_PATH = os.getenv("HOME") .. "/.config/hammerspoon/dns.conf"
+local TAILSCALE_INTERFACE = "utun" -- Base name for Tailscale interfaces
 
 -- State variables
 local serviceStates = {
@@ -28,14 +29,15 @@ local data = {
     localIP = nil,
     ssid = nil,
     vpnConnections = nil,
-    dnsConfiguration = nil
+    dnsConfiguration = nil,
+    tailscaleConnected = false
 }
 
 -- Cache for last applied DNS configuration
 local lastAppliedDNSConfig = { ssid = nil, servers = nil }
 
 -- Forward declarations
-local updateMenu, addMenuItem, getCurrentSSID
+local updateMenu, addMenuItem, getCurrentSSID, checkTailscaleConnection
 
 -- Helper functions
 local function copyToClipboard(_, payload)
@@ -51,6 +53,56 @@ end
 function addMenuItem(menuItems, item)
     table.insert(menuItems, item)
     updateMenu(menuItems)
+end
+
+-- Tailscale detection function
+function checkTailscaleConnection()
+    hs.task.new("/bin/sh", function(exitCode, stdOut, stdErr)
+        local previousState = data.tailscaleConnected
+        data.tailscaleConnected = false
+        
+        for line in stdOut:gmatch("[^\r\n]+") do
+            local interface = line:match("^%s*(%S+)")
+            if interface and interface:match("^utun") then
+                -- Check if the interface is actually Tailscale by looking for a specific Tailscale IP range
+                hs.task.new("/bin/sh", function(exitCode, stdOut, stdErr)
+                    if stdOut:match("100%.") then -- Tailscale IPs typically start with 100.*
+                        data.tailscaleConnected = true
+                        print("Tailscale detected on interface: " .. interface)
+                        
+                        -- If Tailscale state changed, reset DNS to default
+                        if data.tailscaleConnected ~= previousState and data.tailscaleConnected then
+                            print("Tailscale connected. Resetting DNS to default.")
+                            resetDNSToDefault()
+                        end
+                        
+                        obj:buildMenu()
+                    end
+                end, {"-c", "ifconfig " .. interface .. " | grep 'inet ' | awk '{print $2}'"}):start()
+            end
+        end
+    end, {"-c", "ifconfig -l | tr ' ' '\\n' | grep '^utun'"}):start()
+end
+
+local function resetDNSToDefault()
+    local cmd = "/usr/sbin/networksetup -setdnsservers Wi-Fi empty"
+    local success = os.execute(cmd)
+    
+    if success then
+        print("DNS reset to default successful")
+        lastAppliedDNSConfig.ssid = nil
+        lastAppliedDNSConfig.servers = nil
+        
+        hs.notify.new({
+            title = "DNS Settings Reset",
+            informativeText = "Tailscale detected. DNS settings reset to default."
+        }):send()
+        
+        return true
+    else
+        print("Failed to reset DNS to default")
+        return false
+    end
 end
 
 -- DNS Configuration functions
@@ -83,6 +135,12 @@ end
 
 local function updateDNSSettings(dnsServers)
     if not dnsServers then return false end
+    
+    -- If Tailscale is connected, don't update DNS and use default instead
+    if data.tailscaleConnected then
+        print("Tailscale is connected. Using default DNS instead of custom configuration.")
+        return resetDNSToDefault()
+    end
 
     local dnsArray = {}
     for server in dnsServers:gmatch("%S+") do
@@ -160,6 +218,9 @@ function getCurrentSSID()
     local ssid = hs.wifi.currentNetwork()
     data.ssid = ssid or "Not connected"
 
+    -- First check if Tailscale is connected
+    checkTailscaleConnection()
+    
     if ssid then
         local dnsServers, configured = readDNSConfig(ssid)
         if configured then
@@ -168,8 +229,9 @@ function getCurrentSSID()
                 servers = dnsServers,
                 configured = true
             }
-            -- Only update DNS settings if the SSID or DNS servers have changed.
-            if lastAppliedDNSConfig.ssid ~= ssid or lastAppliedDNSConfig.servers ~= dnsServers then
+            
+            -- Only update DNS settings if Tailscale is not connected and SSID or DNS servers have changed
+            if not data.tailscaleConnected and (lastAppliedDNSConfig.ssid ~= ssid or lastAppliedDNSConfig.servers ~= dnsServers) then
                 if updateDNSSettings(dnsServers) then
                     hs.notify.new({
                         title = "Wi-Fi DNS Changed",
@@ -184,13 +246,17 @@ function getCurrentSSID()
                 ssid = ssid,
                 configured = false
             }
-            lastAppliedDNSConfig.ssid = nil
-            lastAppliedDNSConfig.servers = nil
+            if not data.tailscaleConnected then
+                lastAppliedDNSConfig.ssid = nil
+                lastAppliedDNSConfig.servers = nil
+            }
         end
     else
         data.dnsConfiguration = nil
-        lastAppliedDNSConfig.ssid = nil
-        lastAppliedDNSConfig.servers = nil
+        if not data.tailscaleConnected then
+            lastAppliedDNSConfig.ssid = nil
+            lastAppliedDNSConfig.servers = nil
+        }
     end
 
     obj:buildMenu()
@@ -300,20 +366,31 @@ function obj:buildMenu()
     local ssid = data.ssid or "Not connected"
     addMenuItem(menuItems, { title = "📶 SSID: " .. ssid, fn = copyToClipboard })
 
+    -- Tailscale Status
+    local tailscaleStatus = data.tailscaleConnected and "Connected" or "Disconnected"
+    local tailscaleIcon = data.tailscaleConnected and "✅" or "❌"
+    addMenuItem(menuItems, { title = "🔒 Tailscale: " .. tailscaleIcon .. " " .. tailscaleStatus })
+
     if data.dnsConfiguration then
-        if data.dnsConfiguration.configured then
+        if data.tailscaleConnected then
+            addMenuItem(menuItems, {
+                title = "  ℹ️ Using Default DNS (Tailscale Connected)",
+                disabled = true,
+                indent = 1
+            })
+        } else if data.dnsConfiguration.configured then
             addMenuItem(menuItems, {
                 title = string.format("  ✅ DNS Config: %s", data.dnsConfiguration.servers),
                 fn = copyToClipboard,
                 indent = 1
             })
-        else
+        } else {
             addMenuItem(menuItems, {
                 title = "  ⚠️ No Custom DNS Config",
                 disabled = true,
                 indent = 1
             })
-        end
+        }
     end
 
     -- DNS Information
@@ -321,15 +398,22 @@ function obj:buildMenu()
         addMenuItem(menuItems, { title = "-" })
         addMenuItem(menuItems, { title = "🔒 DNS Configuration:", disabled = true })
         local expectedDNS = {}
-        if data.dnsConfiguration and data.dnsConfiguration.configured then
+        if data.tailscaleConnected then
+            -- When Tailscale is connected, we're using default DNS so we don't have expected values
+            addMenuItem(menuItems, { title = "  ℹ️ Using Default DNS (System Provided)", disabled = true, indent = 1 })
+        } else if data.dnsConfiguration and data.dnsConfiguration.configured then
             for server in data.dnsConfiguration.servers:gmatch("%S+") do
                 expectedDNS[server] = true
             end
-        else
+        } else {
             expectedDNS[EXPECTED_DNS] = true
-        end
+        }
+        
         for _, dns in ipairs(data.dnsInfo) do
             local icon = expectedDNS[dns] and "✅" or "⚠️"
+            if data.tailscaleConnected then
+                icon = "ℹ️"  -- When Tailscale connected, all DNS entries are informational
+            end
             addMenuItem(menuItems, { title = string.format("  %s %s", icon, dns), fn = copyToClipboard, indent = 1 })
         end
     end
@@ -339,7 +423,8 @@ function obj:buildMenu()
         addMenuItem(menuItems, { title = "-" })
         addMenuItem(menuItems, { title = "🔐 VPN Connections:", disabled = true })
         for _, vpn in ipairs(data.vpnConnections) do
-            addMenuItem(menuItems, { title = string.format("  • %s: %s", vpn.name, vpn.ip), fn = copyToClipboard, indent = 1 })
+            local isTailscale = vpn.name:match("^utun") and "Tailscale: " or ""
+            addMenuItem(menuItems, { title = string.format("  • %s%s: %s", isTailscale, vpn.name, vpn.ip), fn = copyToClipboard, indent = 1 })
         end
     end
 
@@ -393,8 +478,10 @@ end
 
 function obj:refreshData()
     data = {
-        dnsConfiguration = data.dnsConfiguration  -- Preserve DNS configuration
+        dnsConfiguration = data.dnsConfiguration,  -- Preserve DNS configuration
+        tailscaleConnected = data.tailscaleConnected  -- Preserve Tailscale status
     }
+    checkTailscaleConnection()
     getGeoIPData()
     getLocalIPAddress()
     getCurrentSSID()
